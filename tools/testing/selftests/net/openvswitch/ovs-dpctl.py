@@ -448,7 +448,7 @@ class ovsactions(nla):
                 elif field[0] == "OVS_ACTION_ATTR_TRUNC":
                     print_str += "trunc(%d)" % int(self.get_attr(field[0]))
                 elif field[0] == "OVS_ACTION_ATTR_DROP":
-                    print_str += "drop"
+                    print_str += "drop(%d)" % int(self.get_attr(field[0]))
             elif field[1] == "flag":
                 if field[0] == "OVS_ACTION_ATTR_CT_CLEAR":
                     print_str += "ct_clear"
@@ -470,9 +470,19 @@ class ovsactions(nla):
         parsed = False
         while len(actstr) != 0:
             if actstr.startswith("drop"):
-                # for now, drops have no explicit action, so we
-                # don't need to set any attributes.  The final
-                # act of the processing chain will just drop the packet
+                # If no reason is provided, the implicit drop is used (i.e no
+                # action). If some reason is given, an explicit action is used.
+                actstr, reason = parse_extract_field(
+                    actstr,
+                    "drop(",
+                    "([0-9]+)",
+                    lambda x: int(x, 0),
+                    False,
+                    None,
+                )
+                if reason is not None:
+                    self["attrs"].append(["OVS_ACTION_ATTR_DROP", reason])
+
                 return
 
             elif parse_starts_block(actstr, "^(\d+)", False, True):
