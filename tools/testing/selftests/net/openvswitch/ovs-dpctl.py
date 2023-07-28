@@ -530,6 +530,81 @@ class ovsactions(nla):
                         else:
                             ctact["attrs"].append([scan[1], None])
                         actstr = actstr[strspn(actstr, ", ") :]
+                    # it seems strange to put this here, but nat() is a complex
+                    # sub-action and this lets it sit anywhere in the ct() action
+                    if actstr.startswith("nat"):
+                        actstr = actstr[3:]
+                        natact = ovsactions.ctact.natattr()
+
+                        if actstr.startswith("("):
+                            t = None
+                            actstr = actstr[1:]
+                            if actstr.startswith("src"):
+                                t = "OVS_NAT_ATTR_SRC"
+                                actstr = actstr[3:]
+                            elif actstr.startswith("dst"):
+                                t = "OVS_NAT_ATTR_DST"
+                                actstr = actstr[3:]
+
+                            actstr, ip_block_min = parse_extract_field(
+                                actstr, "=", "([0-9a-fA-F:\.\[]+)", str, False
+                            )
+                            actstr, ip_block_max = parse_extract_field(
+                                actstr, "-", "([0-9a-fA-F:\.\[]+)", str, False
+                            )
+
+                            # [XXXX:YYY::Z]:123
+                            # following RFC 3986
+                            # More complete parsing, ala RFC5952 isn't
+                            # supported.
+                            if actstr.startswith("]"):
+                                actstr = actstr[1:]
+                            if ip_block_min is not None and \
+                               ip_block_min.startswith("["):
+                                ip_block_min = ip_block_min[1:]
+                            if ip_block_max is not None and \
+                               ip_block_max.startswith("["):
+                                ip_block_max = ip_block_max[1:]
+
+                            actstr, proto_min = parse_extract_field(
+                                actstr, ":", "(\d+)", int, False
+                            )
+                            actstr, proto_max = parse_extract_field(
+                                actstr, "-", "(\d+)", int, False
+                            )
+
+                            if t is not None:
+                                natact["attrs"].append([t, None])
+
+                                if ip_block_min is not None:
+                                    natact["attrs"].append(
+                                        ["OVS_NAT_ATTR_IP_MIN", ip_block_min]
+                                    )
+                                if ip_block_max is not None:
+                                    natact["attrs"].append(
+                                        ["OVS_NAT_ATTR_IP_MAX", ip_block_max]
+                                    )
+                                if proto_min is not None:
+                                    natact["attrs"].append(
+                                        ["OVS_NAT_ATTR_PROTO_MIN", proto_min]
+                                    )
+                                if proto_max is not None:
+                                    natact["attrs"].append(
+                                        ["OVS_NAT_ATTR_PROTO_MAX", proto_max]
+                                    )
+
+                            for natscan in (
+                                ("persist", "OVS_NAT_ATTR_PERSISTENT"),
+                                ("hash", "OVS_NAT_ATTR_PROTO_HASH"),
+                                ("random", "OVS_NAT_ATTR_PROTO_RANDOM"),
+                            ):
+                                if actstr.startswith(natscan[0]):
+                                    actstr = actstr[len(natscan[0]) :]
+                                    natact["attrs"].append([natscan[1], None])
+                                    actstr = actstr[strspn(actstr, ", ") :]
+
+                        ctact["attrs"].append(["OVS_CT_ATTR_NAT", natact])
+                        actstr = actstr[strspn(actstr, ",) ") :]
 
                 self["attrs"].append(["OVS_ACTION_ATTR_CT", ctact])
                 parsed = True
