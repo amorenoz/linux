@@ -954,11 +954,11 @@ static void do_output(struct datapath *dp, struct sk_buff *skb, int out_port,
 static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 			    struct sw_flow_key *key, const struct nlattr *attr,
 			    const struct nlattr *actions, int actions_len,
-			    uint32_t cutlen)
+			    uint32_t cutlen, bool last)
 {
 	struct dp_upcall_info upcall;
 	const struct nlattr *a;
-	int rem;
+	int rem, err;
 
 	memset(&upcall, 0, sizeof(upcall));
 	upcall.cmd = OVS_PACKET_CMD_ACTION;
@@ -1018,7 +1018,18 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 		} /* End of switch. */
 	}
 
-	return ovs_dp_upcall(dp, skb, key, &upcall, cutlen);
+	err = ovs_dp_upcall(dp, skb, key, &upcall, cutlen);
+
+	OVS_CB(skb)->cutlen = 0;
+	if (last) {
+		if (upcall.monitor) {
+			/* If the last action is a monitoring userspace action,
+			 * the packet is voluntarily being dropped. */
+			ovs_kfree_skb_reason(skb, OVS_DROP_LAST_ACTION);
+		} else
+			consume_skb(skb);
+	}
+	return err;
 }
 
 static int dec_ttl_exception_handler(struct datapath *dp, struct sk_buff *skb,
@@ -1354,12 +1365,15 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
 		}
 
 		case OVS_ACTION_ATTR_USERSPACE:
+			bool last = nla_is_last(a, rem);
 			output_userspace(dp, skb, key, a, attr,
-						     len, OVS_CB(skb)->cutlen);
-			OVS_CB(skb)->cutlen = 0;
-			if (nla_is_last(a, rem)) {
-				consume_skb(skb);
-				return 0;
+					 len, OVS_CB(skb)->cutlen, last);
+			if (last) {
+				/* If this is the last action, the skb has
+				 * been consumed or freed.
+				 * Return immediately.
+				 */
+				return err;
 			}
 			break;
 
