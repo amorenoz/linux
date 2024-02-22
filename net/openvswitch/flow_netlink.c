@@ -3037,6 +3037,7 @@ static int validate_userspace(const struct nlattr *attr)
 		[OVS_USERSPACE_ATTR_EGRESS_TUN_PORT] = {.type = NLA_U32 },
 		[OVS_USERSPACE_ATTR_ACTIONS] = {.type = NLA_FLAG },
 		[OVS_USERSPACE_ATTR_MCAST] = {.type = NLA_FLAG },
+		[OVS_USERSPACE_ATTR_MONITOR] = {.type = NLA_FLAG },
 	};
 	struct nlattr *a[OVS_USERSPACE_ATTR_MAX + 1];
 	int error;

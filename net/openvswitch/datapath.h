@@ -135,6 +135,7 @@ struct ovs_skb_cb {
  * counter.
  * @egress_tun_info: If nonnull, becomes %OVS_PACKET_ATTR_EGRESS_TUN_KEY.
  * @mru: If not zero, Maximum received IP fragment size.
+ * @monitor: If true, this is a monitoring upcall.
  */
 struct dp_upcall_info {
 	struct ip_tunnel_info *egress_tun_info;
@@ -144,6 +145,7 @@ struct dp_upcall_info {
 	u32 portid;
 	u8 cmd;
 	u16 mru;
+	bool monitor;
 };
 
 /**

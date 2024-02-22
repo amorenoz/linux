@@ -963,6 +963,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 	memset(&upcall, 0, sizeof(upcall));
 	upcall.cmd = OVS_PACKET_CMD_ACTION;
 	upcall.mru = OVS_CB(skb)->mru;
+	upcall.monitor = false;
 
 	for (a = nla_data(attr), rem = nla_len(attr); rem > 0;
 	     a = nla_next(a, &rem)) {
@@ -1006,6 +1007,11 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 
 		case OVS_USERSPACE_ATTR_MCAST: {
 			upcall.portid = MCAST_PID;
+			break;
+		}
+
+		case OVS_USERSPACE_ATTR_MONITOR: {
+			upcall.monitor = true;
 			break;
 		}
 

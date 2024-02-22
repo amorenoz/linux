@@ -696,6 +696,8 @@ enum ovs_userspace_attr {
 	OVS_USERSPACE_ATTR_ACTIONS,   /* Optional flag to get actions. */
 	OVS_USERSPACE_ATTR_MCAST,     /* Optional flag to send the packet to
 					 the "ovs_packet" multicast group. */
+	OVS_USERSPACE_ATTR_MONITOR,   /* Optional flag to mark the upcall as
+					 monitoring. */
 	__OVS_USERSPACE_ATTR_MAX
 };
 
