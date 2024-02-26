@@ -319,8 +319,11 @@ int ovs_dp_upcall(struct datapath *dp, struct sk_buff *skb,
 	struct dp_stats_percpu *stats;
 	int err;
 
-	if (trace_ovs_dp_upcall_enabled())
+	if (!upcall_info->monitor && trace_ovs_dp_upcall_enabled())
 		trace_ovs_dp_upcall(dp, skb, key, upcall_info);
+
+	if (upcall_info->monitor && trace_ovs_dp_monitor_enabled())
+		trace_ovs_dp_monitor(dp, skb, key, upcall_info);
 
 	if (upcall_info->portid == 0) {
 		err = -ENOTCONN;
