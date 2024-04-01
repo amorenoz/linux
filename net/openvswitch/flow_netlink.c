@@ -2381,8 +2381,15 @@ static void ovs_nla_free_sample_action(const struct nlattr *action)
 
 	switch (nla_type(a)) {
 	case OVS_SAMPLE_ATTR_ARG:
-		/* The real list of actions follows this attribute. */
 		a = nla_next(a, &rem);
+
+		/* OVS_SAMPLE_ATTR_PSAMPLE_COOKIE may be present as the second
+		 * attribute.
+		 */
+		if (nla_ok(a, rem) &&
+		    nla_type(a) == OVS_SAMPLE_ATTR_PSAMPLE_COOKIE)
+			a = nla_next(a, &rem);
+
 		ovs_nla_free_nested_actions(a, rem);
 		break;
 	}
@@ -2561,6 +2568,9 @@ static int __ovs_nla_copy_actions(struct net *net, const struct nlattr *attr,
 				  u32 mpls_label_count, bool log,
 				  u32 depth);
 
+static int copy_action(const struct nlattr *from,
+		       struct sw_flow_actions **sfa, bool log);
+
 static int validate_and_copy_sample(struct net *net, const struct nlattr *attr,
 				    const struct sw_flow_key *key,
 				    struct sw_flow_actions **sfa,
@@ -2569,10 +2579,10 @@ static int validate_and_copy_sample(struct net *net, const struct nlattr *attr,
 				    u32 depth)
 {
 	const struct nlattr *attrs[OVS_SAMPLE_ATTR_MAX + 1];
-	const struct nlattr *probability, *actions;
+	const struct nlattr *probability, *actions, *group, *cookie;
 	const struct nlattr *a;
-	int rem, start, err;
 	struct sample_arg arg;
+	int rem, start, err;
 
 	memset(attrs, 0, sizeof(attrs));
 	nla_for_each_nested(a, attr, rem) {
@@ -2589,7 +2599,19 @@ static int validate_and_copy_sample(struct net *net, const struct nlattr *attr,
 		return -EINVAL;
 
 	actions = attrs[OVS_SAMPLE_ATTR_ACTIONS];
-	if (!actions || (nla_len(actions) && nla_len(actions) < NLA_HDRLEN))
+	if (actions && (!nla_len(actions) || nla_len(actions) < NLA_HDRLEN))
+		return -EINVAL;
+
+	group = attrs[OVS_SAMPLE_ATTR_PSAMPLE_GROUP];
+	if (group && nla_len(group) != sizeof(u32))
+		return -EINVAL;
+
+	cookie = attrs[OVS_SAMPLE_ATTR_PSAMPLE_COOKIE];
+	if (cookie &&
+	    (!group || nla_len(cookie) > OVS_PSAMPLE_COOKIE_MAX_SIZE))
+		return -EINVAL;
+
+	if (!group && !actions)
 		return -EINVAL;
 
 	/* validation done, copy sample action. */
@@ -2608,7 +2630,14 @@ static int validate_and_copy_sample(struct net *net, const struct nlattr *attr,
 	 * If the sample is the last action, it can always be excuted
 	 * rather than deferred.
 	 */
-	arg.exec = last || !actions_may_change_flow(actions);
+	if (actions && (last || !actions_may_change_flow(actions)))
+		arg.flags |= OVS_SAMPLE_ARG_FLAG_EXEC;
+
+	if (group) {
+		arg.flags |= OVS_SAMPLE_ARG_FLAG_PSAMPLE;
+		arg.group_id = nla_get_u32(group);
+	}
+
 	arg.probability = nla_get_u32(probability);
 
 	err = ovs_nla_add_action(sfa, OVS_SAMPLE_ATTR_ARG, &arg, sizeof(arg),
@@ -2616,12 +2645,21 @@ static int validate_and_copy_sample(struct net *net, const struct nlattr *attr,
 	if (err)
 		return err;
 
-	err = __ovs_nla_copy_actions(net, actions, key, sfa,
-				     eth_type, vlan_tci, mpls_label_count, log,
-				     depth + 1);
+	if (cookie) {
+		err = ovs_nla_add_action(sfa, OVS_SAMPLE_ATTR_PSAMPLE_COOKIE,
+					 nla_data(cookie), nla_len(cookie),
+					 log);
+		if (err)
+			return err;
+	}
 
-	if (err)
-		return err;
+	if (actions) {
+		err = __ovs_nla_copy_actions(net, actions, key, sfa,
+					     eth_type, vlan_tci,
+					     mpls_label_count, log, depth + 1);
+		if (err)
+			return err;
+	}
 
 	add_nested_action_end(*sfa, start);
 
@@ -3538,7 +3576,7 @@ static int sample_action_to_attr(const struct nlattr *attr,
 	struct nlattr *start, *ac_start = NULL, *sample_arg;
 	int err = 0, rem = nla_len(attr);
 	const struct sample_arg *arg;
-	struct nlattr *actions;
+	struct nlattr *next;
 
 	start = nla_nest_start_noflag(skb, OVS_ACTION_ATTR_SAMPLE);
 	if (!start)
@@ -3546,27 +3584,47 @@ static int sample_action_to_attr(const struct nlattr *attr,
 
 	sample_arg = nla_data(attr);
 	arg = nla_data(sample_arg);
-	actions = nla_next(sample_arg, &rem);
+	next = nla_next(sample_arg, &rem);
 
 	if (nla_put_u32(skb, OVS_SAMPLE_ATTR_PROBABILITY, arg->probability)) {
 		err = -EMSGSIZE;
 		goto out;
 	}
 
-	ac_start = nla_nest_start_noflag(skb, OVS_SAMPLE_ATTR_ACTIONS);
-	if (!ac_start) {
-		err = -EMSGSIZE;
-		goto out;
+	if (arg->flags & OVS_SAMPLE_ARG_FLAG_PSAMPLE) {
+		if (nla_put_u32(skb, OVS_SAMPLE_ATTR_PSAMPLE_GROUP,
+				arg->group_id)) {
+			err = -EMSGSIZE;
+			goto out;
+		}
+		/* A cookie might be stored in the next attribute. */
+		if (nla_type(next) == OVS_SAMPLE_ATTR_PSAMPLE_COOKIE) {
+			if (nla_put(skb, OVS_SAMPLE_ATTR_PSAMPLE_COOKIE,
+				    nla_len(next), nla_data(next))) {
+				err = -EMSGSIZE;
+				goto out;
+			}
+			next = nla_next(next, &rem);
+		}
 	}
 
-	err = ovs_nla_put_actions(actions, rem, skb);
+	if (nla_ok(next, rem)) {
+		ac_start = nla_nest_start_noflag(skb, OVS_SAMPLE_ATTR_ACTIONS);
+		if (!ac_start) {
+			err = -EMSGSIZE;
+			goto out;
+		}
+		err = ovs_nla_put_actions(next, rem, skb);
+	}
 
 out:
 	if (err) {
-		nla_nest_cancel(skb, ac_start);
+		if (ac_start)
+			nla_nest_cancel(skb, ac_start);
 		nla_nest_cancel(skb, start);
 	} else {
-		nla_nest_end(skb, ac_start);
+		if (ac_start)
+			nla_nest_end(skb, ac_start);
 		nla_nest_end(skb, start);
 	}
 
