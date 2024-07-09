@@ -2486,23 +2486,29 @@ class psample_sample(genlmsg):
         ("PSAMPLE_ATTR_TIMESTAMP", "none"),
         ("PSAMPLE_ATTR_PROTO", "none"),
         ("PSAMPLE_ATTR_USER_COOKIE", "array(uint8)"),
+        ("PSAMPLE_ATTR_SAMPLE_PROBABILITY", "flag"),
     )
 
     def dpstr(self):
-        fields = []
-        data = ""
+        cookie = None
+        group = None
+        rate = None
+        data = None
+        rate_key = "rate"
+
         for (attr, value) in self["attrs"]:
             if attr == "PSAMPLE_ATTR_SAMPLE_GROUP":
-                fields.append("group:%d" % value)
+                group = str(value)
             if attr == "PSAMPLE_ATTR_SAMPLE_RATE":
-                fields.append("rate:%d" % value)
+                rate = str(value)
             if attr == "PSAMPLE_ATTR_USER_COOKIE":
-                value = "".join(format(x, "02x") for x in value)
-                fields.append("cookie:%s" % value)
+                cookie = "".join(format(x, "02x") for x in value)
             if attr == "PSAMPLE_ATTR_DATA" and len(value) > 0:
-                data = "data:%s" % "".join(format(x, "02x") for x in value)
+                data = "".join(format(x, "02x") for x in value)
+            if attr == "PSAMPLE_ATTR_SAMPLE_PROBABILITY":
+                rate_key = "prob"
 
-        return ("%s %s" % (",".join(fields), data)).strip()
+        return f"{rate_key}:{rate},group:{group},cookie:{cookie} data:{data}"
 
 
 class psample_msg(Marshal):

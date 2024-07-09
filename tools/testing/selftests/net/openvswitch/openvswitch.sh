@@ -288,9 +288,9 @@ test_psample() {
 	grep -E "userspace action command" $ovs_dir/s0.out >/dev/null 2>&1 || return 1
 
 	# client -> server samples should only contain the first 14 bytes of the packet.
-	grep -E "rate:4294967295,group:1,cookie:c0ffee data:[0-9a-f]{28}$" \
+	grep -E "prob:4294967295,group:1,cookie:c0ffee data:[0-9a-f]{28}$" \
 			 $ovs_dir/stdout >/dev/null 2>&1 || return 1
-	grep -E "rate:4294967295,group:2,cookie:eeff0c" \
+	grep -E "prob:4294967295,group:2,cookie:eeff0c" \
 			 $ovs_dir/stdout >/dev/null 2>&1 || return 1
 
 	return 0
