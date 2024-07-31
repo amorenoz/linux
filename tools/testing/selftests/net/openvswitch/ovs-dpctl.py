@@ -2486,6 +2486,7 @@ class psample_sample(genlmsg):
         ("PSAMPLE_ATTR_TIMESTAMP", "none"),
         ("PSAMPLE_ATTR_PROTO", "none"),
         ("PSAMPLE_ATTR_USER_COOKIE", "array(uint8)"),
+        ("PSAMPLE_ATTR_SAMPLE_PROBABILITY", "flag"),
     )
 
     def dpstr(self):
@@ -2496,6 +2497,8 @@ class psample_sample(genlmsg):
                 fields.append("group:%d" % value)
             if attr == "PSAMPLE_ATTR_SAMPLE_RATE":
                 fields.append("rate:%d" % value)
+            if attr == "PSAMPLE_ATTR_SAMPLE_PROBABILITY":
+                fields.append("prob")
             if attr == "PSAMPLE_ATTR_USER_COOKIE":
                 value = "".join(format(x, "02x") for x in value)
                 fields.append("cookie:%s" % value)

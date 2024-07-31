@@ -316,10 +316,10 @@ test_psample() {
 	ovs_wait grep -q "userspace action command" $ovs_dir/s0.out || return 1
 
 	# client -> server samples should only contain the first 14 bytes of the packet.
-	ovs_wait grep -qE "rate:4294967295,group:1,cookie:c0ffee data:[0-9a-f]{28}$" \
+	ovs_wait grep -qE "rate:4294967295,group:1,cookie:c0ffee,prob data:[0-9a-f]{28}$" \
 		$ovs_dir/stdout || return 1
 
-	ovs_wait grep -q "rate:4294967295,group:2,cookie:eeff0c" $ovs_dir/stdout || return 1
+	ovs_wait grep -q "rate:4294967295,group:2,cookie:eeff0c,prob" $ovs_dir/stdout || return 1
 
 	return 0
 }
