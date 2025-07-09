@@ -978,7 +978,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 		} /* End of switch. */
 	}
 
-	return ovs_dp_upcall(dp, skb, key, &upcall, cutlen);
+	return ovs_dp_upcall(dp, skb, key, &upcall, cutlen, NULL);
 }
 
 static int dec_ttl_exception_handler(struct datapath *dp, struct sk_buff *skb,

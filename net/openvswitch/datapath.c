@@ -33,6 +33,7 @@
 #include <linux/openvswitch.h>
 #include <linux/rculist.h>
 #include <linux/dmi.h>
+#include <net/dropreason-core.h>
 #include <net/genetlink.h>
 #include <net/gso.h>
 #include <net/net_namespace.h>
@@ -127,11 +128,11 @@ static struct vport *new_vport(const struct vport_parms *);
 static int queue_gso_packets(struct datapath *dp, struct sk_buff *,
 			     const struct sw_flow_key *,
 			     const struct dp_upcall_info *,
-			     uint32_t cutlen);
+			     u32 cutlen, enum skb_drop_reason *);
 static int queue_userspace_packet(struct datapath *dp, struct sk_buff *,
 				  const struct sw_flow_key *,
 				  const struct dp_upcall_info *,
-				  uint32_t cutlen);
+				  u32 cutlen, enum skb_drop_reason *);
 
 static void ovs_dp_masks_rebalance(struct work_struct *work);
 
@@ -262,6 +263,7 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
 	flow = ovs_flow_tbl_lookup_stats(&dp->table, key, skb_get_hash(skb),
 					 &n_mask_hit, &n_cache_hit);
 	if (unlikely(!flow)) {
+		enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
 		struct dp_upcall_info upcall;
 
 		memset(&upcall, 0, sizeof(upcall));
@@ -276,18 +278,17 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
 			upcall.portid = ovs_vport_find_upcall_portid(p, skb);
 
 		upcall.mru = OVS_CB(skb)->mru;
-		error = ovs_dp_upcall(dp, skb, key, &upcall, 0);
-		switch (error) {
-		case 0:
-		case -EAGAIN:
-		case -ERESTARTSYS:
-		case -EINTR:
+		error = ovs_dp_upcall(dp, skb, key, &upcall, 0, &reason);
+
+		if (reason != SKB_CONSUMED) {
+			kfree_skb_reason(skb, reason);
+			if (error)
+				net_warn_ratelimited("openvswitch (%s): dropped missed packet: %d",
+						     p->dev->name, -error);
+		} else {
 			consume_skb(skb);
-			break;
-		default:
-			kfree_skb(skb);
-			break;
 		}
+
 		stats_counter = &stats->n_missed;
 		goto out;
 	}
@@ -329,8 +330,9 @@ out:
 int ovs_dp_upcall(struct datapath *dp, struct sk_buff *skb,
 		  const struct sw_flow_key *key,
 		  const struct dp_upcall_info *upcall_info,
-		  uint32_t cutlen)
+		  u32 cutlen, enum skb_drop_reason *reason)
 {
+	enum skb_drop_reason drop_reason;
 	struct dp_stats_percpu *stats;
 	int err;
 
@@ -339,13 +341,16 @@ int ovs_dp_upcall(struct datapath *dp, struct sk_buff *skb,
 
 	if (upcall_info->portid == 0) {
 		err = -ENOTCONN;
+		drop_reason = SKB_DROP_REASON_FRAG_TOO_FAR;  // Fixme
 		goto err;
 	}
 
 	if (!skb_is_gso(skb))
-		err = queue_userspace_packet(dp, skb, key, upcall_info, cutlen);
+		err = queue_userspace_packet(dp, skb, key, upcall_info, cutlen,
+					     &drop_reason);
 	else
-		err = queue_gso_packets(dp, skb, key, upcall_info, cutlen);
+		err = queue_gso_packets(dp, skb, key, upcall_info, cutlen,
+					&drop_reason);
 
 	ovs_vport_update_upcall_stats(skb, upcall_info, !err);
 	if (err)
@@ -360,14 +365,18 @@ err:
 	stats->n_lost++;
 	u64_stats_update_end(&stats->syncp);
 
+	if (reason)
+		*reason = drop_reason;
+
 	return err;
 }
 
 static int queue_gso_packets(struct datapath *dp, struct sk_buff *skb,
 			     const struct sw_flow_key *key,
 			     const struct dp_upcall_info *upcall_info,
-			     uint32_t cutlen)
+			     u32 cutlen, enum skb_drop_reason *reason)
 {
+	enum skb_drop_reason drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	unsigned int gso_type = skb_shinfo(skb)->gso_type;
 	struct sw_flow_key later_key;
 	struct sk_buff *segs, *nskb;
@@ -375,10 +384,16 @@ static int queue_gso_packets(struct datapath *dp, struct sk_buff *skb,
 
 	BUILD_BUG_ON(sizeof(*OVS_CB(skb)) > SKB_GSO_CB_OFFSET);
 	segs = __skb_gso_segment(skb, NETIF_F_SG, false);
-	if (IS_ERR(segs))
-		return PTR_ERR(segs);
-	if (segs == NULL)
-		return -EINVAL;
+	if (IS_ERR(segs)) {
+		drop_reason = SKB_DROP_REASON_SKB_GSO_SEG;
+		err = PTR_ERR(segs);
+		goto out;
+	}
+	if (!segs) {
+		drop_reason = SKB_DROP_REASON_SKB_GSO_SEG;
+		err = -EINVAL;
+		goto out;
+	}
 
 	if (gso_type & SKB_GSO_UDP) {
 		/* The initial flow key extracted by ovs_flow_key_extract()
@@ -394,7 +409,8 @@ static int queue_gso_packets(struct datapath *dp, struct sk_buff *skb,
 		if (gso_type & SKB_GSO_UDP && skb != segs)
 			key = &later_key;
 
-		err = queue_userspace_packet(dp, skb, key, upcall_info, cutlen);
+		err = queue_userspace_packet(dp, skb, key, upcall_info, cutlen,
+					     &drop_reason);
 		if (err)
 			break;
 
@@ -407,6 +423,9 @@ static int queue_gso_packets(struct datapath *dp, struct sk_buff *skb,
 		else
 			consume_skb(skb);
 	}
+out:
+	if (reason)
+		*reason = drop_reason;
 	return err;
 }
 
@@ -451,8 +470,9 @@ static void pad_packet(struct datapath *dp, struct sk_buff *skb)
 static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 				  const struct sw_flow_key *key,
 				  const struct dp_upcall_info *upcall_info,
-				  uint32_t cutlen)
+				  u32 cutlen, enum skb_drop_reason *reason)
 {
+	enum skb_drop_reason drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	struct ovs_header *upcall;
 	struct sk_buff *nskb = NULL;
 	struct sk_buff *user_skb = NULL; /* to be queued to userspace */
@@ -463,30 +483,41 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 	u64 hash;
 
 	dp_ifindex = get_dpifindex(dp);
-	if (!dp_ifindex)
-		return -ENODEV;
+	if (!dp_ifindex) {
+		err = -ENODEV;
+		goto out;
+	}
 
 	if (skb_vlan_tag_present(skb)) {
 		nskb = skb_clone(skb, GFP_ATOMIC);
-		if (!nskb)
-			return -ENOMEM;
+		if (!nskb) {
+			err = -ENOMEM;
+			drop_reason = SKB_DROP_REASON_NOMEM;
+			goto out;
+		}
 
 		nskb = __vlan_hwaccel_push_inside(nskb);
-		if (!nskb)
-			return -ENOMEM;
+		if (!nskb) {
+			err = -ENOMEM;
+			drop_reason = SKB_DROP_REASON_NOMEM;
+			goto out;
+		}
 
 		skb = nskb;
 	}
 
 	if (nla_attr_size(skb->len) > USHRT_MAX) {
+		drop_reason = SKB_DROP_REASON_PKT_TOO_BIG;
 		err = -EFBIG;
 		goto out;
 	}
 
 	/* Complete checksum if needed */
 	if (skb->ip_summed == CHECKSUM_PARTIAL &&
-	    (err = skb_csum_hwoffload_help(skb, 0)))
+	    (err = skb_csum_hwoffload_help(skb, 0))) {
+		drop_reason = SKB_DROP_REASON_SKB_CSUM;
 		goto out;
+	}
 
 	/* Older versions of OVS user space enforce alignment of the last
 	 * Netlink attribute to NLA_ALIGNTO which would require extensive
@@ -501,6 +532,7 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 			      OVS_CB(skb)->acts_origlen);
 	user_skb = genlmsg_new(len, GFP_ATOMIC);
 	if (!user_skb) {
+		drop_reason = SKB_DROP_REASON_NOMEM;
 		err = -ENOMEM;
 		goto out;
 	}
@@ -598,9 +630,12 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 
 	err = genlmsg_unicast(ovs_dp_get_net(dp), user_skb, upcall_info->portid);
 	user_skb = NULL;
+	drop_reason = SKB_CONSUMED;
 out:
 	if (err)
 		skb_tx_error(skb);
+	if (reason)
+		*reason = drop_reason;
 	consume_skb(user_skb);
 	consume_skb(nskb);
 

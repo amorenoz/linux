@@ -321,7 +321,7 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
 void ovs_dp_detach_port(struct vport *);
 int ovs_dp_upcall(struct datapath *, struct sk_buff *,
 		  const struct sw_flow_key *, const struct dp_upcall_info *,
-		  uint32_t cutlen);
+		  u32 cutlen, enum skb_drop_reason *);
 
 u32 ovs_dp_get_upcall_portid(const struct datapath *dp, uint32_t cpu_id);
 
